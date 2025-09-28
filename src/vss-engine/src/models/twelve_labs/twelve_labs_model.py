@@ -45,7 +45,7 @@ class TwelveLabsModel(CustomModelBase):
             
         try:
             self._client = TwelveLabs(api_key=self._config.api_key)
-            indexes = list(self._client.index.list())
+            indexes = list(self._client.indexes.list())
             logger.info(f"Connected to Twelve Labs. Found {len(indexes)} indexes")
         except Exception as e:
             logger.error(f"Failed to initialize client: {e}")
@@ -813,10 +813,12 @@ class TwelveLabsModel(CustomModelBase):
                 return {"text": f"Twelve Labs client not initialized", "error": True}
             
             logger.info(f"Creating upload task for {model_name} with index {index_id}")
-            task = self._client.task.create(
-                index_id=index_id,
-                file=str(video_path)
-            )
+            with open(video_path, 'rb') as f:
+                logger.info(f"Opened video file {video_path} for reading")
+                task = self._client.tasks.create(
+                    index_id=index_id,
+                    video_file=f,
+                )
             
             logger.info(f"Waiting for {model_name} upload task {task.id} to complete...")
             
@@ -825,7 +827,7 @@ class TwelveLabsModel(CustomModelBase):
                 logger.info(f"  {model_name} task status: {task_obj.status}")
             
             try:
-                completed_task = task.wait_for_done(callback=on_task_update)
+                completed_task = self._client.tasks.wait_for_done(task_id=task.id, callback=on_task_update)
                 logger.info(f"{model_name} indexing completed with status: {completed_task.status}")
                 
                 if completed_task.status != "ready":
@@ -850,10 +852,10 @@ class TwelveLabsModel(CustomModelBase):
             def perform_search():
                 return self._client.search.query(
                     index_id=marengo_index_id,
-                    options=self._config.search_options,
+                    search_options=self._config.search_options,
                     query_text=query,
                     group_by="clip",  # Get individual clips
-                    threshold=self._config.search_threshold,
+                    threshold="none",
                     page_limit=self._config.max_clips,
                     sort_option="score"
                 )
@@ -865,35 +867,17 @@ class TwelveLabsModel(CustomModelBase):
             )
             
             clips = []
-            if hasattr(search_results, 'data'):
-                for result in search_results.data:
-                    logger.info(f"Processing search result: video_id={result.video_id}")
-                    vss_file_id = VideoIDMapper.get_vss_id_for_marengo(result.video_id)
-                    logger.info(f"Found VSS file ID: {vss_file_id} for Marengo video ID: {result.video_id}")
-                    clips.append({
-                        "start": result.start,
-                        "end": result.end,
-                        "score": result.score,
-                        "confidence": result.confidence,
-                        "video_id": result.video_id,
-                        "video_title": getattr(result, 'video_title', 'Unknown'),
-                        "vss_file_id": vss_file_id or 'Unknown'
-                    })
-            else:
-                for page in search_results:
-                    for result in page:
-                        logger.info(f"Processing search result: video_id={result.video_id}")
-                        vss_file_id = VideoIDMapper.get_vss_id_for_marengo(result.video_id)
-                        logger.info(f"Found VSS file ID: {vss_file_id} for Marengo video ID: {result.video_id}")
-                        clips.append({
-                            "start": result.start,
-                            "end": result.end,
-                            "score": result.score,
-                            "confidence": result.confidence,
-                            "video_id": result.video_id,
-                            "video_title": getattr(result, 'video_title', 'Unknown'),
-                            "vss_file_id": vss_file_id or 'Unknown'
-                        })
+
+            for clip in search_results:
+                clips.append({
+                    "start": clip.start,
+                    "end": clip.end,
+                    "score": clip.score,
+                    "confidence": clip.confidence,
+                    "video_id": clip.video_id,
+                    "video_thumbnail": clip.thumbnail_url,
+                })
+                        
             
             logger.info(f"Marengo found {len(clips)} relevant clips across all videos")
             return clips
