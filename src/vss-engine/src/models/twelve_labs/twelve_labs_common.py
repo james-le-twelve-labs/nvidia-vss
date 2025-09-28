@@ -294,10 +294,7 @@ def retry_with_exponential_backoff(func, max_retries: int = 3, base_delay: int =
 
 
 def ensure_index_exists(client, index_name: str, engine_name: str, engine_options: list) -> str:
-
-    logger.info(client)
-    logger.info(list(client.indexes.list()))
-
+    """Ensure that a Twelve Labs index exists, creating it if necessary."""
     try:
         indexes = list(client.indexes.list())
         

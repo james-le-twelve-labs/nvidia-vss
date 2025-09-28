@@ -869,6 +869,9 @@ class TwelveLabsModel(CustomModelBase):
             clips = []
 
             for clip in search_results:
+                logger.info(f"Found clip: video_id={clip.video_id}, start={clip.start}, end={clip.end}, score={clip.score}, confidence={clip.confidence}")
+                vss_file_id = VideoIDMapper.get_vss_id_for_marengo(clip.video_id)
+                logger.info(f"Mapped Marengo video ID {clip.video_id} to VSS ID: {vss_file_id or 'Unknown'}")
                 clips.append({
                     "start": clip.start,
                     "end": clip.end,
@@ -876,6 +879,7 @@ class TwelveLabsModel(CustomModelBase):
                     "confidence": clip.confidence,
                     "video_id": clip.video_id,
                     "video_thumbnail": clip.thumbnail_url,
+                    "vss_file_id": vss_file_id or 'Unknown',
                 })
                         
             
