@@ -33,7 +33,6 @@ MILVUS_DATA_DIR=${MILVUS_DATA_DIR}
 MODE="${MODE:-release}"
 
 MODEL_PATH="${MODEL_PATH:-/opt/models/vila-llama-3-8b-lita-im-se-didemo-charades-warehouse-medical-short-e031/}"
-NUM_GPUS="${NUM_GPUS:-`nvidia-smi --query-gpu=name --format=csv,noheader | wc -l`}"
 TRT_LLM_MODE=${TRT_LLM_MODE:-int4_awq}
 
 EXAMPLE_STREAMS_DIR="${EXAMPLE_STREAMS_DIR:-/opt/nvidia/via/streams}"
@@ -44,22 +43,71 @@ export VSS_LOG_LEVEL=$VSS_LOG_LEVEL
 
 ENABLE_NSYS_PROFILER="${ENABLE_NSYS_PROFILER:-false}"
 
-SM_ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader -i 0)
+if [ "$DISABLE_CV_PIPELINE" = false ]; then
+    echo "CV Pipeline is enabled. Performing GPU checks."
+    NUM_GPUS="${NUM_GPUS:-`nvidia-smi --query-gpu=name --format=csv,noheader | wc -l`}"
 
-# Override TRT_LLM_MODE to fp8 for sm 10.x GPUs when int4_awq is selected
-if [[ $SM_ARCH =~ ^10\. ]] && [[ $TRT_LLM_MODE == "int4_awq" ]]; then
-    echo "Overriding TRT_LLM_MODE from int4_awq to fp8 for compute capability $SM_ARCH"
-    TRT_LLM_MODE="fp8"
+    if [[ $NUM_GPUS -eq 0 ]]; then
+        echo "Error: No GPUs were found"
+        exit 1
+    fi
+
+    NUM_NVDEC_ENGINES=$(nvdec_get_count)
+    echo "GPU has $NUM_NVDEC_ENGINES decode engines"
+
+    SM_ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader -i 0)
+    # Override TRT_LLM_MODE to fp8 for sm 10.x GPUs when int4_awq is selected
+    if [[ $SM_ARCH =~ ^10\. ]] && [[ $TRT_LLM_MODE == "int4_awq" ]]; then
+        echo "Overriding TRT_LLM_MODE from int4_awq to fp8 for compute capability $SM_ARCH"
+        TRT_LLM_MODE="fp8"
+    fi
+
+    FREE_GPU_MEM=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader -i 0 | awk '{print $1}')
+    echo "Free GPU memory is $FREE_GPU_MEM MiB"
+
+    if [ $FREE_GPU_MEM -lt 40000 ]; then
+    export VSS_DISABLE_DECODER_REUSE="${VSS_DISABLE_DECODER_REUSE:-true}"
+    fi
+
+    if [ "$VSS_DISABLE_DECODER_REUSE" == "true" ]; then
+        echo "Disabling decoder reuse"
+    fi
+
+    if [ -z $VLM_BATCH_SIZE ]; then
+        GPU_MEM=0
+        if [[ $NUM_GPUS -gt 0 ]]; then
+            GPU_MEM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader -i 0 | awk '{print $1}')
+        fi
+        echo "Total GPU memory is $GPU_MEM MiB per GPU"
+
+        if [[ $TRT_LLM_MODE == "fp16" ]]; then
+            if [[ $GPU_MEM -gt 80000 ]]; then
+                VLM_BATCH_SIZE=16
+            elif [[ $GPU_MEM -gt 46000 ]]; then
+                VLM_BATCH_SIZE=2
+            else
+                VLM_BATCH_SIZE=1
+            fi
+        else
+            if [[ $GPU_MEM -gt 80000 ]]; then
+                VLM_BATCH_SIZE=128
+            elif [[ $GPU_MEM -gt 46000 ]]; then
+                VLM_BATCH_SIZE=16
+            else
+                VLM_BATCH_SIZE=3
+            fi
+        fi
+        echo "Auto-selecting VLM Batch Size to $VLM_BATCH_SIZE"
+    else
+        echo "Using VLM Batch Size $VLM_BATCH_SIZE"
+    fi
+else
+    echo "CV Pipeline is disabled. Assuming no GPUs are required."
+    NUM_GPUS=0
+    NUM_NVDEC_ENGINES=0
+    SM_ARCH="cpu_only"
+    VLM_BATCH_SIZE=1
 fi
-
-
-if [[ $NUM_GPUS -eq 0 ]]; then
-    echo "Error: No GPUs were found"
-    exit 1
-fi
-
-NUM_NVDEC_ENGINES=$(nvdec_get_count)
-echo "GPU has $NUM_NVDEC_ENGINES decode engines"
 
 export CUDA_MPS_PIPE_DIRECTORY=/tmp/nvidia-mps-via
 
@@ -68,46 +116,6 @@ pip3 install /opt/nvidia/via/3rdparty_sources/annoy-1.17.3.tar.gz --no-deps --fo
 # Hide gstreamer failed to load warnings
 python3 via-engine/utils.py 2>/dev/null
 python3 src/utils.py 2>/dev/null
-
-FREE_GPU_MEM=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader -i 0 | awk '{print $1}')
-echo "Free GPU memory is $FREE_GPU_MEM MiB"
-
-if [ $FREE_GPU_MEM -lt 40000 ]; then
-    export VSS_DISABLE_DECODER_REUSE="${VSS_DISABLE_DECODER_REUSE:-true}"
-fi
-
-if [ "$VSS_DISABLE_DECODER_REUSE" == "true" ]; then
-    echo "Disabling decoder reuse"
-fi
-
-if [ -z $VLM_BATCH_SIZE ]; then
-    GPU_MEM=0
-    if [[ $NUM_GPUS -gt 0 ]]; then
-        GPU_MEM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader -i 0 | awk '{print $1}')
-    fi
-    echo "Total GPU memory is $GPU_MEM MiB per GPU"
-
-    if [[ $TRT_LLM_MODE == "fp16" ]]; then
-        if [[ $GPU_MEM -gt 80000 ]]; then
-            VLM_BATCH_SIZE=16
-        elif [[ $GPU_MEM -gt 46000 ]]; then
-            VLM_BATCH_SIZE=2
-        else
-            VLM_BATCH_SIZE=1
-        fi
-    else
-        if [[ $GPU_MEM -gt 80000 ]]; then
-            VLM_BATCH_SIZE=128
-        elif [[ $GPU_MEM -gt 46000 ]]; then
-            VLM_BATCH_SIZE=16
-        else
-            VLM_BATCH_SIZE=3
-        fi
-    fi
-    echo "Auto-selecting VLM Batch Size to $VLM_BATCH_SIZE"
-else
-    echo "Using VLM Batch Size $VLM_BATCH_SIZE"
-fi
 
 mkdir -p /tmp/via-logs/
 
@@ -369,7 +377,10 @@ start_processes() {
 
     start_milvus
 
-    start_cuda_mps_server
+    # Start CUDA MPS server if GPUs are available and CV pipeline is not disabled
+    if [ "$NUM_GPUS" -gt 0 ] && [ $DISABLE_CV_PIPELINE = false ]; then
+        start_cuda_mps_server
+    fi
 
     echo "Using $VLM_MODEL_TO_USE"
     start_via_server

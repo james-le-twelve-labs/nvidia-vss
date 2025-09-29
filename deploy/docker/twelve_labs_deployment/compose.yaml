@@ -27,13 +27,16 @@ services:
       args:
         BASE_IMAGE: ${VIA_IMAGE:-nvcr.io/nvidia/blueprint/vss-engine:2.3.1}
     shm_size: '16gb'
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+
+#    Disabled GPU deployment for Twelve Labs integration.
+
+#    deploy:
+#      resources:
+#        reservations:
+#          devices:
+#            - driver: nvidia
+#              count: all
+#              capabilities: [gpu]
     ports:
       - "${BACKEND_PORT?}:${BACKEND_PORT?}"
       - "${FRONTEND_PORT?}:${FRONTEND_PORT?}"

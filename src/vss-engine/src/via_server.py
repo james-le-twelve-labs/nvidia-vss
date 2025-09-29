@@ -2085,6 +2085,10 @@ class ViaServer:
                     400,
                 )
 
+            logger.info('Asset is live: %s', asset.is_live)
+            logger.info('Streaming output requested: %s', query.stream)
+            logger.info('Live stream info map: %s', self._stream_handler._live_stream_info_map)
+
             # Only streaming output is supported for live streams
             if asset.is_live and not query.stream:
                 raise ViaException(
