@@ -32,7 +32,17 @@ from enum import Enum
 from threading import RLock, Thread
 
 import aiohttp
-import cuda.bindings.runtime as cudart
+# Make CUDA runtime import optional. When running with CV pipeline disabled or on
+# systems without NVIDIA drivers, importing or calling into the CUDA runtime can
+# raise errors (Failed to dlopen libcuda.so.1). Importing here may succeed but
+# using the runtime triggers lazy driver init. We keep a None sentinel so callers
+# can guard calls to CUDA APIs.
+try:
+    import cuda.bindings.runtime as cudart
+    _cudart_import_error = False
+except Exception:
+    cudart = None
+    _cudart_import_error = True
 import gi
 import jinja2
 import nvtx
@@ -719,7 +729,11 @@ class ViaStreamHandler:
                 req_info.end_time = time.time()
                 self.stop_via_gpu_monitor(req_info, chunk_responses)
                 req_info.status = RequestInfo.Status.SUCCESSFUL
-                cudart.cudaProfilerStop()
+                if cudart is not None:
+                    try:
+                        cudart.cudaProfilerStop()
+                    except Exception as e:
+                        logger.warning("cudaProfilerStop() failed: %s", e)
                 nvtx.end_range(req_info.nvtx_summarization_start)
                 logger.info(
                     "Summary generated for video file request %s,"
@@ -1507,7 +1521,14 @@ class ViaStreamHandler:
             summarize_enable = summarize_enable.get("enable", True)
             if summarize is None:
                 summarize = summarize_enable
-        cudart.cudaProfilerStart()
+        # Start CUDA profiler only when CUDA runtime was successfully imported
+        # and CV/GPU functionality is enabled. This avoids attempting to dlopen
+        # libcuda when running in CPU-only mode or when CV pipeline is disabled.
+        if cudart is not None and not getattr(self._args, "disable_cv_pipeline", False):
+            try:
+                cudart.cudaProfilerStart()
+            except Exception as e:
+                logger.warning("cudaProfilerStart() failed: %s", e)
         if prompt:
             summarization_query = prompt
         else:

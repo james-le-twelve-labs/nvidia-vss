@@ -294,25 +294,26 @@ def retry_with_exponential_backoff(func, max_retries: int = 3, base_delay: int =
 
 
 def ensure_index_exists(client, index_name: str, engine_name: str, engine_options: list) -> str:
+    """Ensure that a Twelve Labs index exists, creating it if necessary."""
     try:
-        indexes = list(client.index.list())
+        indexes = list(client.indexes.list())
         
         for index in indexes:
-            if index.name == index_name:
+            if index.index_name == index_name:
                 logger.info(f"Using existing index: {index_name}")
                 return index.id
         
         logger.info(f"Creating index: {index_name}")
-        index = client.index.create(
-            name=index_name,
-            models=[{"name": engine_name, "options": engine_options}]
+        index = client.indexes.create(
+            index_name=index_name,
+            models=[{"model_name": engine_name, "model_options": engine_options}]
         )
         return index.id
         
     except Exception as e:
         if "already_exists" in str(e):
-            indexes = list(client.index.list())
+            indexes = list(client.indexes.list())
             for index in indexes:
-                if index.name == index_name:
+                if index.index_name == index_name:
                     return index.id
         raise e

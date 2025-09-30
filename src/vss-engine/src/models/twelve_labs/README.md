@@ -339,16 +339,14 @@ def search_videos(query, max_clips=10):
             if line:
                 decoded_line = line.decode('utf-8')
                 if decoded_line.startswith('data: '):
-                    data_content = decoded_line[6:]
-                    if data_content == '[DONE]':
-                        break
+                    data_content = decoded_line[12:]
                     try:
-                        import json
                         chunk = json.loads(data_content)
                         if 'choices' in chunk and chunk['choices']:
                             delta = chunk['choices'][0].get('delta', {})
                             if 'content' in delta:
                                 print(delta['content'], end='', flush=True)
+                        return chunk
                     except json.JSONDecodeError:
                         pass
 ```
@@ -391,12 +389,16 @@ def summarize_videos(prompt, video_ids, stream=True):
                             pass
         else:
             # Handle non-streaming response
-            result = response.json()
-            return result
+            for line in response.text.splitlines():
+                if line.startswith('data: '):
+                    data_content = line[6:]
+                    data = json.loads(data_content)
+                    content = data['choices'][0]['message']['content']
+                    return content
 
 # Example usage
 if __name__ == "__main__":
-    # Upload a video
+    # Upload a video (Note: This video_id is not your TwelveLabs video ID, but the internal NVIDIA VSS video ID mapping.)
     video_id = upload_video("sample_video.mp4")
     
     # Search for content

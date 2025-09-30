@@ -1399,6 +1399,16 @@ class VlmPipeline:
         self._num_vlm_procs = args.num_gpus
         if args.vlm_model_type == VlmModelType.OPENAI_COMPATIBLE:
             self._num_vlm_procs = args.num_vlm_procs
+        # If running a cloud-backed VLM (e.g. OpenAI-compatible or Twelve Labs)
+        # ensure there's at least one VLM process even on CPU-only deployments
+        # (num_gpus can be 0 when DISABLE_CV_PIPELINE is set). This allows the
+        # pipeline to dispatch work to a worker process that calls the remote API
+        # (Twelve Labs) without requiring local GPUs.
+        if self._num_vlm_procs == 0 and args.vlm_model_type in (
+            VlmModelType.OPENAI_COMPATIBLE,
+            VlmModelType.TWELVE_LABS,
+        ):
+            self._num_vlm_procs = 1
         logger.info(f"num_vlm_procs set to {self._num_vlm_procs}")
 
         # Create the VLM processes, one on each GPU
@@ -1655,18 +1665,56 @@ class VlmPipeline:
                 enqueue_time=time.time(),
             )
         else:
-            self._decoder_procs[curr_chunk_counter % self._args.num_gpus].enqueue_chunk(
-                chunk,
-                request_params=request_params,
-                chunk_id=curr_chunk_counter,
-                enqueue_time=time.time(),
-                num_frames_per_chunk=num_frames_per_chunk,
-                vlm_input_width=vlm_input_width,
-                vlm_input_height=vlm_input_height,
-                enable_audio=enable_audio,
-                request_id=request_id,
-                video_codec=video_codec,
-            )
+            # If there are decoder processes (GPU decode), use them. When CV pipeline
+            # is disabled or num_gpus==0, decoder_procs will be empty and we must avoid
+            # modulo-by-zero. In that case, fall back to routing the chunk to a VLM
+            # process (or embedding generator when available) to continue processing
+            # without GPU decoding.
+            if getattr(self._args, "num_gpus", 0) > 0 and len(self._decoder_procs) > 0:
+                self._decoder_procs[curr_chunk_counter % self._args.num_gpus].enqueue_chunk(
+                    chunk,
+                    request_params=request_params,
+                    chunk_id=curr_chunk_counter,
+                    enqueue_time=time.time(),
+                    num_frames_per_chunk=num_frames_per_chunk,
+                    vlm_input_width=vlm_input_width,
+                    vlm_input_height=vlm_input_height,
+                    enable_audio=enable_audio,
+                    request_id=request_id,
+                    video_codec=video_codec,
+                )
+            else:
+                # No decoder available: send directly to embedding generator or VLM
+                # process to avoid crashing. Choose a VLM proc index based on chunk
+                # counter to spread load.
+                target_idx = curr_chunk_counter % max(1, self._num_vlm_procs)
+                # Prefer embedding generator when available
+                if self._have_emb_gen and len(self._emb_gen_procs) > 0:
+                    # Ensure frames/frame_times are provided (empty for cloud-backed
+                    # models like TwelveLabs) so the EmbeddingProcess._process
+                    # signature (which expects frames and frame_times) is satisfied.
+                    self._emb_gen_procs[target_idx % len(self._emb_gen_procs)].enqueue_chunk(
+                        chunk,
+                        request_params=request_params,
+                        chunk_id=curr_chunk_counter,
+                        enqueue_time=time.time(),
+                        frames=[],
+                        frame_times=[],
+                    )
+                elif len(self._vlm_procs) > 0:
+                    self._vlm_procs[target_idx % len(self._vlm_procs)].enqueue_chunk(
+                        chunk,
+                        request_params=request_params,
+                        chunk_id=curr_chunk_counter,
+                        enqueue_time=time.time(),
+                    )
+                else:
+                    # No processing backends available; this is a configuration error
+                    logger.error(
+                        "No VLM or embedding generator processes available to process chunk %d",
+                        curr_chunk_counter,
+                    )
+                    raise Exception("No processing backends available (no VLM/emb_gen processes)")
 
     def add_live_stream(
         self,
